@@ -1,7 +1,9 @@
+import os
 import pandas as pd
 
-MARKETS_FILE = "kalshi_markets.csv"
-SERIES_FILE = "kalshi_series.csv"
+FOLDER = os.path.dirname(os.path.abspath(__file__))
+MARKETS_FILE = os.path.join(FOLDER, "kalshi_markets.csv")
+SERIES_FILE = os.path.join(FOLDER, "kalshi_series.csv")
 YEARS = 5
 
 pd.set_option("display.width", 220)
