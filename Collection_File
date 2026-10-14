@@ -4,9 +4,10 @@ import requests
 import pandas as pd
 
 BASE = "https://api.elections.kalshi.com/trade-api/v2"
-MARKETS_FILE = "kalshi_markets.csv"
-SERIES_FILE = "kalshi_series.csv"
-STATE_FILE = "kalshi_progress.txt"
+FOLDER = os.path.dirname(os.path.abspath(__file__))
+MARKETS_FILE = os.path.join(FOLDER, "kalshi_markets.csv")
+SERIES_FILE = os.path.join(FOLDER, "kalshi_series.csv")
+STATE_FILE = os.path.join(FOLDER, "kalshi_progress.txt")
 
 KEEP = ["ticker", "event_ticker", "title", "yes_sub_title", "market_type", "status", "result",
         "open_time", "close_time", "settlement_ts", "volume_fp", "open_interest_fp",
@@ -39,47 +40,65 @@ def get(path, params):
 
 def load_state():
     if not os.path.exists(STATE_FILE):
-        return "", ""
+        return None
     with open(STATE_FILE) as f:
         parts = f.read().strip().split("|")
-    if len(parts) != 2:
-        return "", ""
-    return parts[0], parts[1]
+    if len(parts) != 3:
+        return None
+    return parts[0], parts[1], int(parts[2])
 
 
-def save_state(phase, cursor):
-    with open(STATE_FILE, "w") as f:
-        f.write(f"{phase}|{cursor}")
+def save_state(phase, cursor, pages):
+    temp = STATE_FILE + ".tmp"
+    with open(temp, "w") as f:
+        f.write(f"{phase}|{cursor}|{pages}")
+    os.replace(temp, STATE_FILE)
 
 
-print("Downloading series list...")
-data = get("/series", {})
-if data:
-    series = pd.DataFrame(data["series"])
-    series = series[["ticker", "title", "category", "frequency"]]
-    series.to_csv(SERIES_FILE, index=False)
-    print("Series saved:", len(series))
+def rows_in_file():
+    if not os.path.exists(MARKETS_FILE):
+        return 0
+    with open(MARKETS_FILE, encoding="utf-8") as f:
+        return max(0, sum(1 for line in f) - 1)
 
-done_phase, cursor = load_state()
+
+print("Saving files to:", FOLDER)
+
+if not os.path.exists(SERIES_FILE):
+    print("Downloading series list...")
+    data = get("/series", {})
+    if data:
+        series = pd.DataFrame(data["series"])
+        series = series[["ticker", "title", "category", "frequency"]]
+        series.to_csv(SERIES_FILE, index=False)
+        print("Series saved:", len(series))
+
 phase_names = [p[0] for p in PHASES]
+saved = rows_in_file()
+state = load_state()
 start_index = 0
-if done_phase == "complete":
-    print("Download already finished. Delete kalshi_progress.txt and kalshi_markets.csv to start over.")
-    raise SystemExit
-if done_phase in phase_names:
+cursor = ""
+pages = 0
+
+if state is None:
+    if os.path.exists(MARKETS_FILE):
+        print(f"\nFound {MARKETS_FILE} but no progress file, so I can't tell where it stopped.")
+        print("Rename or delete kalshi_markets.csv to start a fresh download.")
+        raise SystemExit
+    print("Starting a fresh download")
+else:
+    done_phase, cursor, pages = state
+    if done_phase == "complete":
+        print("Download already finished. Delete kalshi_progress.txt and kalshi_markets.csv to start over.")
+        raise SystemExit
     start_index = phase_names.index(done_phase)
     if cursor == "":
         start_index += 1
-    print(f"Resuming after {done_phase}")
-else:
-    cursor = ""
-    if os.path.exists(MARKETS_FILE):
-        os.remove(MARKETS_FILE)
+        pages = 0
+    print(f"RESUMING: {saved:,} markets already saved. Picking up {done_phase} at page {pages}.")
 
-total_saved = 0
 for name, path, extra in PHASES[start_index:]:
-    print(f"\nPhase: {name}")
-    pages = 0
+    print(f"\nPhase {phase_names.index(name) + 1} of {len(PHASES)}: {name}")
     while True:
         params = {"limit": 1000, "mve_filter": "exclude"}
         params.update(extra)
@@ -100,16 +119,17 @@ for name, path, extra in PHASES[start_index:]:
         if rows:
             df = pd.DataFrame(rows, columns=KEEP + ["source"])
             df.to_csv(MARKETS_FILE, mode="a", header=not os.path.exists(MARKETS_FILE), index=False)
-            total_saved += len(rows)
+            saved += len(rows)
         cursor = data.get("cursor", "")
         pages += 1
-        save_state(name, cursor)
+        save_state(name, cursor, pages)
         if pages % 25 == 0:
-            print(f"  {name}: {pages} pages, {total_saved} markets with volume saved so far")
+            print(f"  {name}: page {pages}, {saved:,} markets saved in total")
         if not cursor or len(markets) == 0:
             break
     print(f"  {name} finished after {pages} pages")
     cursor = ""
+    pages = 0
 
-save_state("complete", "")
-print(f"\nDone. Saved {total_saved} markets this run to {MARKETS_FILE}")
+save_state("complete", "", 0)
+print(f"\nDone. {saved:,} markets saved to {MARKETS_FILE}")
